@@ -1,0 +1,4 @@
+.env
+last_id.json
+__pycache__/
+*.pyc
