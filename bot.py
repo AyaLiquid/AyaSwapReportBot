@@ -74,19 +74,8 @@ def send_photo_with_caption(file_id: str, caption: str) -> int | None:
         return None
 
 
-def _dbg(msg: str, data: dict, hyp: str) -> None:
-    import json as _json
-    entry = _json.dumps({"sessionId": "cd5fb4", "timestamp": int(time.time() * 1000),
-                         "message": msg, "data": data, "hypothesisId": hyp})
-    with open("debug-cd5fb4.log", "a", encoding="utf-8") as _f:
-        _f.write(entry + "\n")
-
-
 def edit_message_media(target_msg_id: int, file_id: str, caption: str) -> None:
     """Edit both photo and caption of an already-sent message."""
-    # #region agent log
-    _dbg("edit_message_media called", {"target_msg_id": target_msg_id, "file_id_tail": file_id[-10:], "caption_len": len(caption)}, "E")
-    # #endregion
     try:
         resp = requests.post(
             f"{API}/editMessageMedia",
@@ -97,18 +86,8 @@ def edit_message_media(target_msg_id: int, file_id: str, caption: str) -> None:
             },
             timeout=30,
         )
-        # #region agent log
-        try:
-            resp_body = resp.json()
-        except Exception:
-            resp_body = {}
-        _dbg("edit_message_media response", {"http_status": resp.status_code, "ok": resp_body.get("ok"), "description": resp_body.get("description", "")}, "E")
-        # #endregion
         resp.raise_for_status()
     except requests.RequestException as e:
-        # #region agent log
-        _dbg("edit_message_media exception", {"error": str(e)}, "E")
-        # #endregion
         log.error("editMessageMedia failed: %s", e)
 
 
@@ -142,18 +121,6 @@ def drain_updates(state: dict) -> tuple[int, int]:
             edited = update.get("edited_message")
             if edited and edited.get("chat", {}).get("id") == SOURCE_CHAT_ID:
                 msg_id = str(edited["message_id"])
-                # #region agent log
-                _dbg("edited_message received", {
-                    "msg_id": msg_id,
-                    "in_sent": msg_id in sent,
-                    "in_pending": msg_id in pending,
-                    "has_photo": bool(edited.get("photo")),
-                    "has_caption": bool(edited.get("caption") or edited.get("text")),
-                    "qualifies": has_photo_and_text(edited),
-                    "sent_keys": list(sent.keys())[-5:],
-                }, "B_C")
-                # #endregion
-
                 if msg_id in sent:
                     # Already forwarded — edit the target message right away
                     if has_photo_and_text(edited):
