@@ -20,7 +20,7 @@ TARGET_CHAT_ID = int(os.environ["TARGET_CHAT_ID"])
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 STATE_FILE = "last_id.json"
 EDIT_POLL_INTERVAL = 10   # seconds between edit checks
-FORWARD_INTERVAL = 600    # seconds between forwarding new messages (10 min)
+FORWARD_INTERVAL = 60     # seconds between forwarding new messages (1 min)
 
 
 def load_state() -> dict:
