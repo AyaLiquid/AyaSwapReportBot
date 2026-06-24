@@ -29,7 +29,14 @@ def load_state() -> dict:
             data = json.load(f)
             data.setdefault("sent", {})
             data.setdefault("pending", {})
-            return data
+        # #region agent log
+        log.info("[DBG-A] State loaded from file: offset=%s sent_count=%d sent_sample=%s",
+                 data.get("offset"), len(data["sent"]), list(data["sent"].items())[:3])
+        # #endregion
+        return data
+    # #region agent log
+    log.info("[DBG-A] State file not found — starting fresh (sent={})")
+    # #endregion
     return {"offset": 0, "sent": {}, "pending": {}}
 
 
@@ -121,6 +128,10 @@ def drain_updates(state: dict) -> tuple[int, int]:
             edited = update.get("edited_message")
             if edited and edited.get("chat", {}).get("id") == SOURCE_CHAT_ID:
                 msg_id = str(edited["message_id"])
+                # #region agent log
+                log.info("[DBG-B_C] edited_message: msg_id=%s in_sent=%s in_pending=%s sent_count=%d",
+                         msg_id, msg_id in sent, msg_id in pending, len(sent))
+                # #endregion
                 if msg_id in sent:
                     # Already forwarded — edit the target message right away
                     if has_photo_and_text(edited):
