@@ -82,18 +82,18 @@ def _dbg(msg: str, data: dict, hyp: str) -> None:
         _f.write(entry + "\n")
 
 
-def edit_caption(target_msg_id: int, new_caption: str) -> None:
-    """Edit the caption of an already-sent message in the target group."""
+def edit_message_media(target_msg_id: int, file_id: str, caption: str) -> None:
+    """Edit both photo and caption of an already-sent message."""
     # #region agent log
-    _dbg("edit_caption called", {"target_msg_id": target_msg_id, "caption_len": len(new_caption)}, "A_D")
+    _dbg("edit_message_media called", {"target_msg_id": target_msg_id, "file_id_tail": file_id[-10:], "caption_len": len(caption)}, "E")
     # #endregion
     try:
         resp = requests.post(
-            f"{API}/editMessageCaption",
+            f"{API}/editMessageMedia",
             json={
                 "chat_id": TARGET_CHAT_ID,
                 "message_id": target_msg_id,
-                "caption": new_caption,
+                "media": {"type": "photo", "media": file_id, "caption": caption},
             },
             timeout=30,
         )
@@ -102,14 +102,14 @@ def edit_caption(target_msg_id: int, new_caption: str) -> None:
             resp_body = resp.json()
         except Exception:
             resp_body = {}
-        _dbg("edit_caption response", {"http_status": resp.status_code, "ok": resp_body.get("ok"), "description": resp_body.get("description", "")}, "A_D")
+        _dbg("edit_message_media response", {"http_status": resp.status_code, "ok": resp_body.get("ok"), "description": resp_body.get("description", "")}, "E")
         # #endregion
         resp.raise_for_status()
     except requests.RequestException as e:
         # #region agent log
-        _dbg("edit_caption exception", {"error": str(e)}, "A_D")
+        _dbg("edit_message_media exception", {"error": str(e)}, "E")
         # #endregion
-        log.error("editMessageCaption failed: %s", e)
+        log.error("editMessageMedia failed: %s", e)
 
 
 def drain_updates(state: dict) -> tuple[int, int]:
@@ -157,8 +157,9 @@ def drain_updates(state: dict) -> tuple[int, int]:
                 if msg_id in sent:
                     # Already forwarded — edit the target message right away
                     if has_photo_and_text(edited):
+                        file_id = edited["photo"][-1]["file_id"]
                         caption = edited.get("caption") or edited.get("text", "")
-                        edit_caption(sent[msg_id], caption)
+                        edit_message_media(sent[msg_id], file_id, caption)
                         edited_count += 1
                         log.info(
                             "Immediately updated target %s (source %s)",
