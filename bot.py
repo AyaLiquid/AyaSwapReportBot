@@ -19,18 +19,18 @@ TARGET_CHAT_ID = int(os.environ["TARGET_CHAT_ID"])
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 STATE_FILE = "last_id.json"
-INTERVAL = 600  # seconds (10 minutes)
+EDIT_POLL_INTERVAL = 10   # seconds between edit checks
+FORWARD_INTERVAL = 600    # seconds between forwarding new messages (10 min)
 
 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             data = json.load(f)
-            # migrate old format that only had {"offset": N}
-            if "sent" not in data:
-                data["sent"] = {}
+            data.setdefault("sent", {})
+            data.setdefault("pending", {})
             return data
-    return {"offset": 0, "sent": {}}
+    return {"offset": 0, "sent": {}, "pending": {}}
 
 
 def save_state(state: dict) -> None:
@@ -91,91 +91,113 @@ def edit_caption(target_msg_id: int, new_caption: str) -> None:
         log.error("editMessageCaption failed: %s", e)
 
 
-def check_and_forward() -> None:
-    state = load_state()
-    offset = state["offset"]
-    # sent: str(source_message_id) -> target_message_id
+def drain_updates(state: dict) -> tuple[int, int]:
+    """
+    Fetch all pending updates from Telegram.
+    - New messages are added to state["pending"] (forwarded later on schedule).
+    - Edited messages are applied immediately: edit the target if already forwarded,
+      or update the pending buffer if the message hasn't been sent yet.
+    Returns (edited_count, updates_processed).
+    """
     sent: dict[str, int] = state["sent"]
-    forwarded = 0
+    pending: dict[str, dict] = state["pending"]
+    offset: int = state["offset"]
     edited_count = 0
+    total = 0
 
     while True:
         updates = get_updates(offset)
         if not updates:
             break
 
-        # Collect new messages and edits from the source group separately
-        new_messages: dict[str, dict] = {}
-        edited_messages: dict[str, dict] = {}
-
         for update in updates:
             offset = update["update_id"] + 1
+            total += 1
 
             msg = update.get("message")
             if msg and msg.get("chat", {}).get("id") == SOURCE_CHAT_ID:
-                new_messages[str(msg["message_id"])] = msg
+                pending[str(msg["message_id"])] = msg
 
             edited = update.get("edited_message")
             if edited and edited.get("chat", {}).get("id") == SOURCE_CHAT_ID:
-                edited_messages[str(edited["message_id"])] = edited
+                msg_id = str(edited["message_id"])
 
-        # Process new messages; use the edited version if it arrived in the same cycle
-        for msg_id, message in new_messages.items():
-            if msg_id in edited_messages:
-                # Edited before we even forwarded it — use the latest version
-                message = edited_messages.pop(msg_id)
-
-            if not has_photo_and_text(message):
-                log.debug("Skipped message %s (needs both photo and text)", msg_id)
-                continue
-
-            file_id = message["photo"][-1]["file_id"]
-            caption = message.get("caption") or message.get("text", "")
-            target_id = send_photo_with_caption(file_id, caption)
-            if target_id:
-                sent[msg_id] = target_id
-                forwarded += 1
-                log.info("Forwarded %s → target %s", msg_id, target_id)
-
-        # Process edits to messages that were forwarded in a previous cycle
-        for msg_id, edited in edited_messages.items():
-            if msg_id not in sent:
-                log.debug("Edited message %s was never forwarded, skipping", msg_id)
-                continue
-
-            if not has_photo_and_text(edited):
-                log.debug("Edited message %s no longer qualifies, skipping", msg_id)
-                continue
-
-            new_caption = edited.get("caption") or edited.get("text", "")
-            edit_caption(sent[msg_id], new_caption)
-            edited_count += 1
-            log.info("Updated caption of target %s (source %s)", sent[msg_id], msg_id)
+                if msg_id in sent:
+                    # Already forwarded — edit the target message right away
+                    if has_photo_and_text(edited):
+                        caption = edited.get("caption") or edited.get("text", "")
+                        edit_caption(sent[msg_id], caption)
+                        edited_count += 1
+                        log.info(
+                            "Immediately updated target %s (source %s)",
+                            sent[msg_id], msg_id,
+                        )
+                    else:
+                        log.debug("Edit on %s no longer qualifies, skipping", msg_id)
+                elif msg_id in pending:
+                    # Still in the buffer — replace with the edited version
+                    pending[msg_id] = edited
+                    log.debug("Updated buffered message %s with its edit", msg_id)
 
         state["offset"] = offset
-        state["sent"] = sent
-        save_state(state)
 
-        # Fewer than 100 updates means we've caught up
         if len(updates) < 100:
             break
 
-    log.info("Cycle done — forwarded %d, updated %d", forwarded, edited_count)
+    return edited_count, total
+
+
+def forward_pending(state: dict) -> int:
+    """Forward all buffered new messages that qualify (photo + text)."""
+    sent: dict[str, int] = state["sent"]
+    pending: dict[str, dict] = state["pending"]
+    forwarded = 0
+
+    for msg_id in list(pending):
+        message = pending.pop(msg_id)
+        if not has_photo_and_text(message):
+            log.debug("Skipped %s (needs both photo and text)", msg_id)
+            continue
+
+        file_id = message["photo"][-1]["file_id"]
+        caption = message.get("caption") or message.get("text", "")
+        target_id = send_photo_with_caption(file_id, caption)
+        if target_id:
+            sent[msg_id] = target_id
+            forwarded += 1
+            log.info("Forwarded %s → target %s", msg_id, target_id)
+
+    return forwarded
 
 
 def main() -> None:
+    state = load_state()
+    last_forward_at = 0.0
+
     log.info(
-        "Bot started. Source: %s → Target: %s. Interval: %ds",
-        SOURCE_CHAT_ID,
-        TARGET_CHAT_ID,
-        INTERVAL,
+        "Bot started. Source: %s → Target: %s. "
+        "New messages every %ds, edit checks every %ds.",
+        SOURCE_CHAT_ID, TARGET_CHAT_ID, FORWARD_INTERVAL, EDIT_POLL_INTERVAL,
     )
+
     while True:
         try:
-            check_and_forward()
+            edited_count, _ = drain_updates(state)
+            if edited_count:
+                log.info("Applied %d edit(s) immediately", edited_count)
+
+            now = time.time()
+            if now - last_forward_at >= FORWARD_INTERVAL:
+                forwarded = forward_pending(state)
+                last_forward_at = now
+                log.info("Forward cycle done — sent %d new message(s)", forwarded)
+
+            save_state(state)
+
         except Exception as e:
             log.error("Unexpected error: %s", e)
-        time.sleep(INTERVAL)
+
+        time.sleep(EDIT_POLL_INTERVAL)
 
 
 if __name__ == "__main__":
