@@ -18,7 +18,7 @@ SOURCE_CHAT_ID = int(os.environ["SOURCE_CHAT_ID"])
 TARGET_CHAT_ID = int(os.environ["TARGET_CHAT_ID"])
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-STATE_FILE = "last_id.json"
+STATE_FILE = os.environ.get("STATE_FILE", "/data/last_id.json")
 EDIT_POLL_INTERVAL = 10   # seconds between edit checks
 FORWARD_INTERVAL = 60     # seconds between forwarding new messages (1 min)
 
